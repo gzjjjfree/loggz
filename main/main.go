@@ -7,7 +7,7 @@ import (
 
 	//"time"
 
-	"github.com/gzjjjfree/loggz/loggz"
+	"github.com/gzjjjfree/loggz"
 )
 
 //var wg sync.WaitGroup
