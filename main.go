@@ -2,7 +2,7 @@ package main
 
 import (
 	//"fmt"
-	"sync"
+	//"sync"
 	//"time"
 
 	//"time"
@@ -10,7 +10,7 @@ import (
 	"github.com/gzjjjfree/loggz/loggz"
 )
 
-var wg sync.WaitGroup
+//var wg sync.WaitGroup
 
 func main() {
 	//fmt.Println("Hello, world!")
