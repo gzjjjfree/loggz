@@ -11,9 +11,9 @@
 
 使用 `go get` 安装：
 
+```bash
+go get github.com/gzjjjfree/loggz@v1.0.0
 `bash
-`go get github.com/gzjjjfree/loggz@v1.0.0`
-
 ## 使用方法
 
 导入库：
