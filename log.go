@@ -415,6 +415,8 @@ func Close() {
 	Testwg.Wait()
 }
 
+// Example:
+// WriteTraceLog("World")
 // 写入 Trace 日志
 func WriteTraceLog(msg string) {
 	if config.Level <= trace && logEnable {
