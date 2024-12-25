@@ -13,7 +13,7 @@
 
 ```bash
 go get github.com/gzjjjfree/loggz@v1.0.0
-
+```bash
 ## 使用方法
 
 导入库：
