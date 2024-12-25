@@ -20,10 +20,11 @@ go get github.com/gzjjjfree/loggz@v1.0.0
 
 ```go
 import "github.com/gzjjjfree/loggz"
-
+```
 ## 示例
+```go
 loggz.WriteTaceLog("我要记录的信息")
-
+```
 
 ## 许可证
 
