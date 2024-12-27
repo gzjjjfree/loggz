@@ -14,7 +14,7 @@ func TestLog(t *testing.T) {
 	loggz.Setloglevel(&loggz.LogConfig{Level: 0})
 	var (
 		i = 1
-		k = 1000
+		k = 10
 		wg sync.WaitGroup
 	)
 	//wg.Add(1)

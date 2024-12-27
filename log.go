@@ -32,8 +32,8 @@ var (
 	logAfterDone  chan struct{} = make(chan struct{})
 	Signal                      = struct{}{}
 	total         int32         = 0
-	logBeforeChan chan *string  = make(chan *string)
-	logAfterChan  chan *string  = make(chan *string)
+	logBeforeChan chan string  = make(chan string)
+	logAfterChan  chan string  = make(chan string)
 	logEnable     bool          = false
 	fileReName    bool          = false
 	writing       bool          = false
@@ -88,8 +88,8 @@ func registerWriteLog() {
 		for {
 			select {
 			case logMsg := <-logAfterChan:
-				if logMsg != nil {
-					writeLog(*logMsg, filePath)
+				if logMsg != "" {
+					writeLog(logMsg, filePath)
 
 					if fileReName {
 						Testwg.Add(1)
@@ -103,17 +103,22 @@ func registerWriteLog() {
 			}
 		}
 	}()
+	wg.Add(1)
 	go func() {
-		msg := new(string)
+		msg := ""
 		for {
 			select {
 			case logMsg := <-logBeforeChan:
-				if logMsg != nil {
+				if logMsg != "" {
+					if msg != "" {
+						msg += "\n" + logMsg
+					} else {
+						msg += logMsg
+					}
+					
 					if !writing {
 						logAfterChan <- msg
-						*msg = ""
-					} else {
-						*msg += *logMsg
+						msg = ""
 					}
 				}
 			case <-logBeforeDone:
@@ -421,7 +426,7 @@ func WriteTraceLog(msg string) {
 		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
 		atomic.AddInt32(&total, 1)
 		msg = timestamp + "[Trace]" + msg
-		logBeforeChan <- &msg
+		logBeforeChan <- msg
 	}
 }
 
@@ -431,7 +436,7 @@ func WriteDebugLog(msg string) {
 		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
 		atomic.AddInt32(&total, 1)
 		msg = timestamp + "[Debug]" + msg
-		logBeforeChan <- &msg
+		logBeforeChan <- msg
 	}
 }
 
@@ -441,7 +446,7 @@ func WriteInfoLog(msg string) {
 		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
 		atomic.AddInt32(&total, 1)
 		msg = timestamp + "[Info]" + msg
-		logBeforeChan <- &msg
+		logBeforeChan <- msg
 	}
 }
 
@@ -451,7 +456,7 @@ func WriteWarnLog(msg string) {
 		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
 		atomic.AddInt32(&total, 1)
 		msg = timestamp + "[Warn]" + msg
-		logBeforeChan <- &msg
+		logBeforeChan <- msg
 	}
 }
 
@@ -461,7 +466,7 @@ func WriteErrLog(msg string) {
 		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
 		atomic.AddInt32(&total, 1)
 		msg = timestamp + "[Err]" + msg
-		logBeforeChan <- &msg
+		logBeforeChan <- msg
 	}
 }
 
@@ -471,6 +476,6 @@ func WriteFatalLog(msg string) {
 		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
 		atomic.AddInt32(&total, 1)
 		msg = timestamp + "[Fatal]" + msg
-		logBeforeChan <- &msg
+		logBeforeChan <- msg
 	}
 }
