@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -24,21 +25,24 @@ const (
 )
 
 var (
-	subDir                    = "logmsg"
-	logFileName               = "trace.log"
-	scanstr                   = "]: 总共第 "
-	logDone     chan struct{} = make(chan struct{})
-	Signal                    = struct{}{}
-	total                     = 0
-	logchan     chan *string  = make(chan *string, 100)
-	logEnable   bool          = false
-	config                    = defaultLogConfig
-	logFile     *os.File
-	logMutex    sync.Mutex
-	saveMutex   sync.Mutex
-	timestamp   string
-	wg          sync.WaitGroup
-	Testwg      sync.WaitGroup
+	subDir                      = "logmsg"
+	logFileName                 = "trace"
+	scanstr                     = "]: 总共第 "
+	logBeforeDone chan struct{} = make(chan struct{})
+	logAfterDone  chan struct{} = make(chan struct{})
+	Signal                      = struct{}{}
+	total         int32         = 0
+	logBeforeChan chan *string  = make(chan *string)
+	logAfterChan  chan *string  = make(chan *string)
+	logEnable     bool          = false
+	fileReName    bool          = false
+	writing       bool          = false
+	config                      = defaultLogConfig
+	logMutex      sync.Mutex
+	saveMutex     sync.Mutex
+	timestamp     string
+	wg            sync.WaitGroup
+	Testwg        sync.WaitGroup
 )
 
 // LogConfig 存储日志配置
@@ -61,7 +65,6 @@ var defaultLogConfig = &LogConfig{
 
 // 默认开启 trace 级别的日志
 func init() {
-	reLoadFile(subDir, logFileName)
 	registerWriteLog()
 }
 
@@ -76,29 +79,65 @@ func registerWriteLog() {
 	go func() {
 		// 标记日志为运行时
 		logEnable = true
-		// 这里是匿名函数要执行的代码
-		msg := new(string)
+		filePath, err := getPath(logFileName)
+		if err != nil {
+			fmt.Println("in writeLog getPath(logFileName) err")
+		}
 		// defer 函数结束后标记完成
 		defer wg.Done()
 		for {
 			select {
-			case logMsg := <-logchan:
+			case logMsg := <-logAfterChan:
 				if logMsg != nil {
-					// 定义时间格式及计数
-					timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
-					*msg = timestamp + *logMsg
-					writeLog(*msg)
+					writeLog(*logMsg, filePath)
+
+					if fileReName {
+						Testwg.Add(1)
+						go checkSaveFile(filePath)
+						fileReName = false
+					}
 				}
-			case <-logDone:
+			case <-logAfterDone:
 				// 接收到信号后结束写入等待
 				return
 			}
 		}
 	}()
+	go func() {
+		msg := new(string)
+		for {
+			select {
+			case logMsg := <-logBeforeChan:
+				if logMsg != nil {
+					if !writing {
+						logAfterChan <- msg
+						*msg = ""
+					} else {
+						*msg += *logMsg
+					}
+				}
+			case <-logBeforeDone:
+				return
+			}
+		}
+
+	}()
 }
 
 // getTotal() 根据日志文件确定原本总计数
-func getTotal() int {
+func getTotal() int32 {
+	logMutex.Lock()
+	defer logMutex.Unlock()
+	filePath, err := getPath(logFileName + ".log")
+	if err != nil {
+		fmt.Println("in getTotal getPath err")
+	}
+	logFile, err := os.Open(filePath)
+	if err != nil {
+		fmt.Println("in getTotal os.Open(filePath) err: ", filePath)
+	}
+	defer logFile.Close()
+
 	// 逐行读取文件，for 循环读取到最后一行
 	scanner := bufio.NewScanner(logFile)
 	var lastLine string
@@ -112,7 +151,7 @@ func getTotal() int {
 }
 
 // 根据 beforestr 查找紧跟的数字
-func extractNumberString(str string, beforestr string) (int, error) {
+func extractNumberString(str string, beforestr string) (int32, error) {
 	index := strings.LastIndex(str, beforestr)
 	if index == -1 || index+len(beforestr) >= len(str) {
 		return 0, fmt.Errorf("字符串格式不正确")
@@ -133,66 +172,188 @@ func extractNumberString(str string, beforestr string) (int, error) {
 		return 0, fmt.Errorf("数字转换错误: %w", err)
 	}
 
-	return num, nil
+	return int32(num), nil
+}
+
+// 取得文件路径
+func getPath(fileName string) (string, error) {
+	// 构建子目录的完整路径
+	dirPath := filepath.Join(".", subDir) // "." 表示当前目录
+	// 创建子目录，如果不存在
+	err := os.MkdirAll(dirPath, os.ModePerm) // os.ModePerm 设置所有权限
+	if err != nil {
+		return "", fmt.Errorf("创建目录失败: %w", err)
+	}
+	filePath := filepath.Join(dirPath, fileName)
+	return filePath, nil
 }
 
 // 写入日志
-func writeLog(msg string) {
+func writeLog(msg string, filePath string) {
 	// 互斥确保每次只有一个写入操作
 	logMutex.Lock()
-	defer logMutex.Unlock()
-	total++
+	setWriting(true)
+
+	defer setWriting(false)
+	defer logMutex.Unlock()	
+	
+	logFile, err := os.OpenFile(filePath+".log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644) // 0644 设置文件权限 os.O_RDWR|os.O_CREATE|os.O_APPEND 文件追加写入
+	if err != nil {
+		fmt.Println("in writeLog os.OpenFile(filePath err")
+	}
+	defer logFile.Close()
 
 	fileInfo, err := logFile.Stat()
 	if err != nil {
 		fmt.Println("获取文件信息出错:", err)
-		reLoadFile(subDir, logFileName)
 		return
 	}
 	_, err = fmt.Fprintln(logFile, msg) // 写入日志信息
 	if err != nil {
 		fmt.Printf("写入日志失败第 %v 次: %v\n", total, err)
-		reLoadFile(subDir, logFileName)
 		return
 	} else {
 		// 成功写入日志后，判断日志大小，分离日志限制文件过大
-		filesize := fileInfo.Size()
-		if filesize > int64(config.MaxSize*1024*1024) || total > config.MaxEntries {
-			logFile.Close()
-			logFile = nil
-			rename(logFileName)
-			reLoadFile(subDir, logFileName)
+		fileSize := fileInfo.Size()
+		if fileSize > int64(config.MaxSize*1024*1024) || total > int32(config.MaxEntries) {
+			filePath, err := getPath(logFileName)
+			if err != nil {
+				fmt.Println("in writeLog getPath(logFileName) err")
+			}
+			Testwg.Wait()
+			partFile, err := os.Create(filePath + ".temp")
+			if err != nil {
+				fmt.Println("in  writeLog os.Create(filePath + t) err")
+				return
+			}
+			defer partFile.Close()
+			logFile.Seek(0, io.SeekStart)
+			_, err = io.Copy(partFile, logFile)
+			if err != nil && err != io.EOF { // io.EOF 是正常的文件末尾
+				fmt.Println("err: ", err)
+			}
+			err = os.Truncate(filePath+".log", 0) // 将文件截断为 0 字节
+			if err != nil {
+				fmt.Println("清空文件错误:", err)
+				return
+			}
+
+			fileReName = true
 			total = 0
 		}
 	}
 }
+func setWriting(c bool) {
+	writing = c
+}
 
-// 重新打开日志文件
-func reLoadFile(subDir string, reLoadName string) error {
-	if logFile != nil { // 添加空指针检查
-		logFile.Close() // 显式关闭文件
-		logFile = nil   // 防止重复关闭
-	}
-	var err error
-	// openMode 打开文件的模式
-	openMode := os.O_RDWR | os.O_CREATE | os.O_APPEND
-	logFile, err = openOrCreateFile(subDir, reLoadName, openMode)
+// 检查保存文件的日志时间和文件大小
+func checkSaveFile(filePath string) {
+	//fmt.Println("in checkSaveFile")
+	saveMutex.Lock()
+	defer saveMutex.Unlock()
+	defer Testwg.Done()
+	saveFile, err := os.OpenFile(filePath+"save.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
-		fmt.Println("打开文件失败: ", err)
-		return err
+		fmt.Println("in checkSaveFile os.OpenFile(filePath+save.log err != nil")
+		return
 	}
-	return nil
+	defer saveFile.Close()
+	srcFile, err := os.Open(filePath + ".temp")
+	if err != nil {
+		fmt.Println("in checkSaveFile os.Open(filePath+temp err != nil")
+		return
+	}
+	defer srcFile.Close()
+	_, err = io.Copy(saveFile, srcFile)
+	if err != nil {
+		fmt.Println("in checkSaveFile io.Copy(saveFile, srcFile) err != nil")
+		return
+	}
+	srcFile.Close()
+	//return
+	err = os.Remove(filePath + ".temp")
+	if err != nil {
+		fmt.Println("in checkSaveFile os.Remove(filePath+temp err != nil")
+		return
+	}
+
+	reFile, err := os.OpenFile(filePath+"r", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		fmt.Println("in checkSaveFile os.OpenFile(filePath+r err")
+	}
+	defer reFile.Close()
+	saveFile.Seek(0, io.SeekStart)
+	scanner := bufio.NewScanner(saveFile)
+	checkLine := true // 预设检查日志日期
+	currentTime := time.Now().UTC()
+	var timeString string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if checkLine {
+			str := strings.Split(line, "[")
+			if len(str) > 1 {
+				str = strings.Split(str[1], "]")
+				timeString = str[0]
+			}
+			layout := "2006-01-02 15:04:05 UTC"
+			parsedTime, err := time.Parse(layout, timeString)
+			if err != nil { // 日志格式不对时，检查下一条
+				continue
+			}
+
+			expirationTime := parsedTime.Add(config.MaxAge) // 日志时间加上保存期限
+			isExpired := expirationTime.Before(currentTime)
+			if !isExpired { // 如果前面的日志不过期, 跳过检查后面的日志
+				//fmt.Println("checkLine = false")
+				checkLine = false
+				fmt.Fprintln(reFile, line)
+			}
+		} else {
+			fmt.Fprintln(reFile, line)
+		}
+	}
+	saveFile.Close()
+
+	fileInfo, _ := reFile.Stat() //os.Stat(filePath+"r")
+	fileSize := fileInfo.Size()
+	os.Remove(filePath + "save.log")
+	if fileSize > int64(config.MaxAgeSize*1024*1024) {
+		partFile, err := os.Create(filePath + "d")
+		if err != nil {
+			fmt.Println("in  checkSaveFile os.Create(filePath + d) err")
+			return
+		}
+		defer partFile.Close()
+
+		_, err = io.CopyN(partFile, reFile, fileSize-int64(config.MaxAgeSize*1024*1024))
+		if err != nil && err != io.EOF { // io.EOF 是正常的文件末尾
+			fmt.Println("err: ", err)
+		}
+
+		partFile.Close()
+		err = os.Remove(filePath + "d")
+		if err != nil {
+			fmt.Println("in checkSaveFile os.Remove(filePath + d) err")
+		}
+	}
+	reFile.Close()
+	err = os.Rename(filePath+"r", filePath+"save.log")
+	if err != nil {
+		fmt.Println("in checkSaveFile os.Rename(filePath+r, filePath+save.log) err")
+	}
 }
 
 // 设置日志等级, 参数为结构体
 //
-//		&LogConfig{
-//			Level      int           // 日志等级, 最小值 0, 最大值 5, 默认 trace 0 级
-//			MaxSize    int           // 文件大小, 单位 MB, 最小值为1, 最大值为10, 默认为 5
-//			MaxEntries int           // 最大条目数, 最小值为 1000, 最大值为 100000, 默认为 10000
-//			MaxAge     time.Duration // 最长保存时间, 默认 7 天 7 * 24 * time.Hour
-//	        MaxAgeSize int           // 保存文件的大小, 默认为 20 MB
-//		}
+//&LogConfig{
+//	Level      int           // 日志等级, 最小值 0, 最大值 5, 默认 trace 0 级
+//	MaxSize    int           // 文件大小, 单位 MB, 最小值为1, 最大值为10, 默认为 5
+//	MaxEntries int           // 最大条目数, 最小值为 1000, 最大值为 100000, 默认为10000
+//	MaxAge     time.Duration // 最长保存时间, 默认 7 天 7 * 24 * time.Hour
+//	MaxAgeSize int           // 保存文件的大小, 默认为 20 MB
+//}
 func Setloglevel(options *LogConfig) {
 	logMutex.Lock()
 	defer logMutex.Unlock()
@@ -226,235 +387,90 @@ func Setloglevel(options *LogConfig) {
 	}
 	switch config.Level {
 	case 0:
-		logFileName = "trace.log"
+		logFileName = "trace"
 	case 1:
-		logFileName = "debug.log"
+		logFileName = "debug"
 	case 2:
-		logFileName = "info.log"
+		logFileName = "info"
 	case 3:
-		logFileName = "warn.log"
+		logFileName = "warn"
 	case 4:
-		logFileName = "error.log"
+		logFileName = "error"
 	case 5:
-		logFileName = "fatal.log"
+		logFileName = "fatal"
 	}
-	// 更改设置后，重新打开日志文件
-	reLoadFile(subDir, logFileName)
-}
-
-// 根据目录、文件名、模式打开文件
-func openOrCreateFile(subDir string, fileName string, openMode int) (*os.File, error) {
-	// 构建子目录的完整路径
-	dirPath := filepath.Join(".", subDir) // "." 表示当前目录
-
-	// 创建子目录，如果不存在
-	err := os.MkdirAll(dirPath, os.ModePerm) // os.ModePerm 设置所有权限
-	if err != nil {
-		return nil, fmt.Errorf("创建目录失败: %w", err)
-	}
-
-	// 构建文件的完整路径
-	filePath := filepath.Join(dirPath, fileName)
-
-	// 以读写模式打开文件，如果不存在则创建
-	file, err := os.OpenFile(filePath, openMode, 0644) // 0644 设置文件权限 os.O_RDWR|os.O_CREATE|os.O_APPEND 文件追加写入
-	if err != nil {
-		fmt.Println("打开/创建文件失败:: ", err)
-		return nil, err
-	}
-
-	return file, nil
-}
-
-// 当满足条件时, 分离文件
-func rename(filename string) {
-	subPath := filepath.Join(".", subDir)                 // 日志保存目录
-	workPath := filepath.Join(subPath, filename)          // 现工作文件
-	renewPath := filepath.Join(subPath, "renew"+filename) // 需要把现有内容添加的文件
-
-	openMode := os.O_RDWR | os.O_APPEND
-	renewFile, err := os.OpenFile(renewPath, openMode, 0644)
-	if err != nil { // 没有添加的目标文件，直接改名
-		fmt.Println("in rename os.OpenFile(renewPath, openMode, 0644) is err")
-		err1 := os.Rename(workPath, renewPath)
-		if err1 != nil {
-			// 重命名失败时删除文件，防止日志文件过大
-			os.Remove(workPath) // 删除文件
-			return
-		}
-		// 重命名成功的话直接返回
-		return
-	}
-	defer renewFile.Close()
-	// 当打开了更新文件时，把工作文件内容添加到更新文件中
-	workFile, _ := os.Open(workPath)
-	_, err = io.Copy(renewFile, workFile)
-	if err != nil {
-		return
-	}
-	workFile.Close()
-	os.Remove(workPath)
-
-	fileInfo, err := renewFile.Stat()
-	if err != nil {
-		fmt.Println("获取文件信息出错:", err)
-		defer os.Remove(renewPath)
-		return
-	}
-
-	fileSize := fileInfo.Size()
-	if fileSize > int64(config.MaxSize*1024*1024) {
-		// 文件大小超过配置设定, 逐行读取文件, 直至小于设定
-		exceedSize := int(fileSize) - config.MaxSize*1024*1024 // 超过的字节数
-		renewFile.Seek(0, io.SeekStart)
-		scanner := bufio.NewScanner(renewFile)
-		var lines []string // 使用切片存储每一行
-		for scanner.Scan() && exceedSize > 0 {
-			line := scanner.Text()
-			lines = append(lines, scanner.Text())
-			exceedSize = exceedSize - len(line)
-		}
-		if config.MaxAge != 0 { // 当有保存时长设定时, 将多出的行添加到保存文件，然后检查它
-			savePath := filepath.Join(subPath, "save"+filename) // 根据日期保存的文件，最大不超过 100 MB
-			savemsg := strings.Join(lines, "\n")                // 使用换行符连接所有行
-			Testwg.Add(1)
-			go checkSaveFile(savePath, &savemsg) // 开启协程去检查保存文档
-		}
-		lines = nil
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
-		}
-		renewFile.Close()
-		msg := strings.Join(lines, "\n")
-		renewFile, _ = os.OpenFile(renewPath, os.O_WRONLY|os.O_TRUNC, 0644)
-		fmt.Fprintln(renewFile, msg)
-	}
-}
-
-// 检查保存文件的日志时间和文件大小
-func checkSaveFile(filePath string, msg *string) {
-	saveMutex.Lock()
-	defer saveMutex.Unlock()
-	saveFile, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return
-	}
-	fmt.Fprintln(saveFile, *msg)
-
-	reFile, _ := os.OpenFile(filePath+"r", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	saveFile.Seek(0, io.SeekStart)
-	scanner := bufio.NewScanner(saveFile)
-	checkLine := true // 预设检查日志日期
-	currentTime := time.Now().UTC()
-	var timeString string
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if checkLine {
-			str := strings.Split(line, "[")
-			if len(str) > 1 {
-				str = strings.Split(str[1], "]")
-				timeString = str[0]
-			}
-			layout := "2006-01-02 15:04:05 UTC"
-			parsedTime, err := time.Parse(layout, timeString)
-			if err != nil { // 日志格式不对时，检查下一条
-				continue
-			}
-
-			expirationTime := parsedTime.Add(config.MaxAge) // 日志时间加上保存期限
-			isExpired := expirationTime.Before(currentTime)
-			if !isExpired { // 如果前面的日志不过期, 跳过检查后面的日志
-				checkLine = false
-				fmt.Fprintln(reFile, line)
-			}
-		} else {
-			fmt.Fprintln(reFile, line)
-		}
-	}
-	saveFile.Close()
-	reFile.Close()
-	time.Sleep(time.Millisecond * 10)
-	os.Remove(filePath)
-	os.Rename(filePath+"r", filePath)
-	fileInfo, _ := os.Stat(filePath)
-	fileSize := fileInfo.Size()
-	// 当保存文档过大时，分离文档
-	if fileSize > int64(config.MaxAgeSize*1024*1024) {
-		source, err := os.Open(filePath)
-		if err != nil {
-			os.Remove(filePath)
-		}
-		defer source.Close()
-		partFile, err := os.Create(filePath + "r")
-		if err != nil {
-			os.Remove(filePath)
-		}
-		defer partFile.Close()
-		_, err = io.CopyN(partFile, source, fileSize-int64(config.MaxAgeSize*1024*1024))
-		if err != nil && err != io.EOF { // io.EOF 是正常的文件末尾
-			fmt.Println("err: ", err)
-		}
-		os.Remove(filePath + "r")
-	}
-	Testwg.Done()
 }
 
 // 关闭文件及通道
 func Close() {
 	logEnable = false
-	close(logchan)
-	close(logDone)
-
-	if logFile != nil { // 添加空指针检查
-		logFile.Close() // 显式关闭文件
-		logFile = nil   // 防止重复关闭
-	}
+	close(logAfterChan)
+	close(logAfterDone)
+	close(logBeforeChan)
+	close(logBeforeDone)
 	// 等待 registerWriteLog 里的协程结束
 	wg.Wait()
 	Testwg.Wait()
 }
 
 // Example:
-// WriteTraceLog("World")
+// WriteTraceLog("Hello World")
 // 写入 Trace 日志
 func WriteTraceLog(msg string) {
 	if config.Level <= trace && logEnable {
-		logchan <- &msg
+		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
+		atomic.AddInt32(&total, 1)
+		msg = timestamp + "[Trace]" + msg
+		logBeforeChan <- &msg
 	}
 }
 
 // 写入 Debug 日志
 func WriteDebugLog(msg string) {
 	if config.Level <= debug && logEnable {
-		logchan <- &msg
+		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
+		atomic.AddInt32(&total, 1)
+		msg = timestamp + "[Debug]" + msg
+		logBeforeChan <- &msg
 	}
 }
 
 // 写入 Info 日志
 func WriteInfoLog(msg string) {
 	if config.Level <= info && logEnable {
-		logchan <- &msg
+		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
+		atomic.AddInt32(&total, 1)
+		msg = timestamp + "[Info]" + msg
+		logBeforeChan <- &msg
 	}
 }
 
 // 写入 Warn 日志
 func WriteWarnLog(msg string) {
 	if config.Level <= warn && logEnable {
-		logchan <- &msg
+		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
+		atomic.AddInt32(&total, 1)
+		msg = timestamp + "[Warn]" + msg
+		logBeforeChan <- &msg
 	}
 }
 
 // 写入 Err 日志
 func WriteErrLog(msg string) {
 	if config.Level <= logerr && logEnable {
-		logchan <- &msg
+		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
+		atomic.AddInt32(&total, 1)
+		msg = timestamp + "[Err]" + msg
+		logBeforeChan <- &msg
 	}
 }
 
 // 写入 Fatal 日志
 func WriteFatalLog(msg string) {
 	if config.Level <= fatal && logEnable {
-		logchan <- &msg
+		timestamp = "[" + time.Now().UTC().Format("2006-01-02 15:04:05 UTC") + "]: 总共第 " + fmt.Sprint(total) + " 次： "
+		atomic.AddInt32(&total, 1)
+		msg = timestamp + "[Fatal]" + msg
+		logBeforeChan <- &msg
 	}
 }
