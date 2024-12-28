@@ -32,8 +32,8 @@ var (
 	logAfterDone  chan struct{} = make(chan struct{})
 	Signal                      = struct{}{}
 	total         int32         = 0
-	logBeforeChan chan string  = make(chan string)
-	logAfterChan  chan string  = make(chan string)
+	logBeforeChan chan string   = make(chan string)
+	logAfterChan  chan string   = make(chan string)
 	logEnable     bool          = false
 	fileReName    bool          = false
 	writing       bool          = false
@@ -105,6 +105,7 @@ func registerWriteLog() {
 	}()
 	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		msg := ""
 		for {
 			select {
@@ -115,7 +116,7 @@ func registerWriteLog() {
 					} else {
 						msg += logMsg
 					}
-					
+
 					if !writing {
 						logAfterChan <- msg
 						msg = ""
@@ -200,8 +201,8 @@ func writeLog(msg string, filePath string) {
 	setWriting(true)
 
 	defer setWriting(false)
-	defer logMutex.Unlock()	
-	
+	defer logMutex.Unlock()
+
 	logFile, err := os.OpenFile(filePath+".log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644) // 0644 设置文件权限 os.O_RDWR|os.O_CREATE|os.O_APPEND 文件追加写入
 	if err != nil {
 		fmt.Println("in writeLog os.OpenFile(filePath err")
@@ -352,13 +353,13 @@ func checkSaveFile(filePath string) {
 
 // 设置日志等级, 参数为结构体
 //
-//&LogConfig{
-//	Level      int           // 日志等级, 最小值 0, 最大值 5, 默认 trace 0 级
-//	MaxSize    int           // 文件大小, 单位 MB, 最小值为1, 最大值为10, 默认为 5
-//	MaxEntries int           // 最大条目数, 最小值为 1000, 最大值为 100000, 默认为10000
-//	MaxAge     time.Duration // 最长保存时间, 默认 7 天 7 * 24 * time.Hour
-//	MaxAgeSize int           // 保存文件的大小, 默认为 20 MB
-//}
+//	&LogConfig{
+//		Level      int           // 日志等级, 最小值 0, 最大值 5, 默认 trace 0 级
+//		MaxSize    int           // 文件大小, 单位 MB, 最小值为1, 最大值为10, 默认为 5
+//		MaxEntries int           // 最大条目数, 最小值为 1000, 最大值为 100000, 默认为10000
+//		MaxAge     time.Duration // 最长保存时间, 默认 7 天 7 * 24 * time.Hour
+//		MaxAgeSize int           // 保存文件的大小, 默认为 20 MB
+//	}
 func Setloglevel(options *LogConfig) {
 	logMutex.Lock()
 	defer logMutex.Unlock()
