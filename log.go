@@ -122,6 +122,11 @@ func registerWriteLog() {
 						msg = ""
 					}
 				}
+			case <-time.After(time.Second):
+				if msg != "" && !writing {
+					logAfterChan <- msg
+					msg = ""
+				}
 			case <-logBeforeDone:
 				return
 			}
