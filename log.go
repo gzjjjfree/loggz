@@ -41,8 +41,8 @@ var (
 	logMutex      sync.Mutex
 	saveMutex     sync.Mutex
 	timestamp     string
-	wg            sync.WaitGroup
 	Testwg        sync.WaitGroup
+	once          sync.Once
 )
 
 // LogConfig 存储日志配置
@@ -74,7 +74,6 @@ func registerWriteLog() {
 	total = 0
 	// 只在这处调用 getTotal 确保 total 的正确
 	total = getTotal() + 1
-	wg.Add(1)
 	// 启动一组 goroutine 并跟踪它们的完成状态
 	go func() {
 		// 标记日志为运行时
@@ -84,7 +83,6 @@ func registerWriteLog() {
 			fmt.Println("in writeLog getPath(logFileName) err")
 		}
 		// defer 函数结束后标记完成
-		defer wg.Done()
 		for {
 			select {
 			case logMsg := <-logAfterChan:
@@ -103,9 +101,7 @@ func registerWriteLog() {
 			}
 		}
 	}()
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		msg := ""
 		for {
 			select {
@@ -373,6 +369,8 @@ func Setloglevel(options *LogConfig) {
 			switch options.Level {
 			case 0, 1, 2, 3, 4, 5:
 				config.Level = options.Level
+			case -1:
+				Close()
 			}
 		}
 		if options.MaxSize != config.MaxSize { // 检查 MaxSize 是否设置
@@ -415,13 +413,14 @@ func Setloglevel(options *LogConfig) {
 // 关闭文件及通道
 func Close() {
 	logEnable = false
-	close(logAfterChan)
-	close(logAfterDone)
-	close(logBeforeChan)
-	close(logBeforeDone)
+	once.Do(func() { logBeforeDone <- Signal })
+	once.Do(func() { logAfterDone <- Signal })
 	// 等待 registerWriteLog 里的协程结束
-	wg.Wait()
 	Testwg.Wait()
+	once.Do(func() { close(logBeforeChan) })
+	once.Do(func() { close(logAfterChan) })
+	once.Do(func() { close(logBeforeDone) })
+	once.Do(func() { close(logAfterDone) })
 }
 
 // Example:
