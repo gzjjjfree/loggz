@@ -137,11 +137,11 @@ func getTotal() int32 {
 	defer logMutex.Unlock()
 	filePath, err := getPath(logFileName + ".log")
 	if err != nil {
-		fmt.Println("in getTotal getPath err")
+		return 1
 	}
 	logFile, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("in getTotal os.Open(filePath) err: ", filePath)
+		return 1
 	}
 	defer logFile.Close()
 
