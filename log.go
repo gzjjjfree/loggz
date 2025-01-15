@@ -156,12 +156,13 @@ func getTotal() int32 {
 	}
 
 	reader := bufio.NewReader(logFile)
-	//lines := make([]string, 0, 10) // 预分配切片，提高效率
-	lineCount := 0
 	offset := int64(1)
-
-	for lineCount < 100 && offset <= fileSize {
-		_, err = logFile.Seek(-offset, io.SeekEnd) // 从文件末尾向前移动
+	_, err = logFile.Seek(0, io.SeekEnd) // 从文件末尾向前移动
+	if err != nil {
+		return 0
+	}
+	for offset <= fileSize {
+		_, err = logFile.Seek(-offset, io.SeekCurrent) // 从文件末尾向前移动
 		if err != nil {
 			return 0
 		}
@@ -170,24 +171,22 @@ func getTotal() int32 {
 		if err != nil {
 			return 0
 		}
-		fmt.Println("in getTotal b: ", string(b), " offset: ", offset)
-		if b == '[' {
-			reader.ReadBytes('[')
-			line, err := reader.ReadBytes('[')
+		if b == ']' {
+			line, err := reader.ReadString('[')
+			line = "]" + line
 			if err != nil && err.Error() != "EOF" {
 				fmt.Println("in getTotal reader.ReadStrin err: ", err)
 				return 0
 			}
-			//去除行尾的\n
 			if len(line) > 0 {
 				line = line[:len(line)-1]
 				if num, _ := extractNumberString(string(line), scanstr); num != 0 {
 					return num
-				}
-				lineCount++
+				}				
 			}
 		}
 		offset++
+		reader.Discard(reader.Buffered())  // 重置位移
 	}
 	return 0
 	// 逐行读取文件，for 循环读取到最后一行
