@@ -65,6 +65,7 @@ var defaultLogConfig = &LogConfig{
 
 // 默认开启 trace 级别的日志
 func init() {
+	fmt.Println("in writeLog ")
 	registerWriteLog()
 }
 
@@ -145,16 +146,128 @@ func getTotal() int32 {
 	}
 	defer logFile.Close()
 
-	// 逐行读取文件，for 循环读取到最后一行
-	scanner := bufio.NewScanner(logFile)
-	var lastLine string
-	for scanner.Scan() {
-		lastLine = scanner.Text() // 每次扫描都更新 lastLine
+	fileInfo, err := logFile.Stat()
+	if err != nil {
+		return 1
+	}
+	fileSize := fileInfo.Size()
+	if fileSize == 0 {
+		return 1
 	}
 
-	num, _ := extractNumberString(lastLine, scanstr)
+	reader := bufio.NewReader(logFile)
+	//lines := make([]string, 0, 10) // 预分配切片，提高效率
+	lineCount := 0
+	offset := int64(1)
 
-	return num
+	for lineCount < 100 && offset <= fileSize {
+		_, err = logFile.Seek(-offset, io.SeekEnd) // 从文件末尾向前移动
+		if err != nil {
+			return 0
+		}
+
+		b, err := reader.ReadByte()
+		if err != nil {
+			return 0
+		}
+		fmt.Println("in getTotal b: ", string(b), " offset: ", offset)
+		if b == '[' {
+			reader.ReadBytes('[')
+			line, err := reader.ReadBytes('[')
+			if err != nil && err.Error() != "EOF" {
+				fmt.Println("in getTotal reader.ReadStrin err: ", err)
+				return 0
+			}
+			//去除行尾的\n
+			if len(line) > 0 {
+				line = line[:len(line)-1]
+				if num, _ := extractNumberString(string(line), scanstr); num != 0 {
+					return num
+				}
+				lineCount++
+			}
+		}
+		offset++
+	}
+	return 0
+	// 逐行读取文件，for 循环读取到最后一行
+	//scanner := bufio.NewScanner(logFile)
+	//var lastLine string
+	//for scanner.Scan() {
+	//	lastLine = scanner.Text() // 每次扫描都更新 lastLine
+	//}
+	//
+	//num, _ := extractNumberString(lastLine, scanstr)
+	//
+	//return num
+}
+
+func reverseReadFile(filename string, numLines int) error {
+	file, err := os.Open(filename)
+	if err != nil {
+			return err
+	}
+	defer file.Close()
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+			return err
+	}
+	fileSize := fileInfo.Size()
+	if fileSize == 0 {
+		return nil
+	}
+
+	reader := bufio.NewReader(file)
+	lines := make([]string, 0, numLines) // 预分配切片，提高效率
+	lineCount := 0
+	offset := int64(1)
+
+	for lineCount < numLines && offset <= fileSize {
+			_, err = file.Seek(-offset, os.SEEK_END) // 从文件末尾向前移动
+			if err != nil {
+					return err
+			}
+
+			b, err := reader.ReadByte()
+			if err != nil {
+					return err
+			}
+
+			if b == '\n' {
+					line, err := reader.ReadString('\n')
+					if err != nil {
+							return err
+					}
+					//去除行尾的\n
+					line = line[:len(line)-1]
+					lines = append(lines, line)
+					lineCount++
+			}
+			offset++
+	}
+
+	// 处理最后一行
+	if offset > fileSize {
+		_, err = file.Seek(0, os.SEEK_SET)
+		if err != nil {
+			return err
+		}
+		line,err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+					//去除行尾的\n
+					line = line[:len(line)-1]
+					lines = append(lines, line)
+	}
+
+	// 倒序输出
+	for i := len(lines) - 1; i >= 0; i-- {
+			fmt.Println(lines[i])
+	}
+
+	return nil
 }
 
 // 根据 beforestr 查找紧跟的数字
